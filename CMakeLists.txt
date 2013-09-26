@@ -26,5 +26,6 @@ endif ()
 
 include_directories ( ${Boost_INCLUDE_DIRS} )
 include_directories ( ${CMAKE_CURRENT_SOURCE_DIR}/include )
+include_directories ( /home/karsten/boost/mtl/usr/include )
 
 add_executable ( google_matrix google_matrix.cpp )
