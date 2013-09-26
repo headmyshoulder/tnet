@@ -33,3 +33,12 @@ nosetests.xml
 .mr.developer.cfg
 .project
 .pydevproject
+
+
+
+
+*~
+*.kdev4
+data/
+build/
+

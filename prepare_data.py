@@ -58,9 +58,10 @@ print "Converting gtfs files in " + args.output_directory
 files = glob.glob( "*.txt" )
 for f in files:
     os.system( "dos2unix " + f )
+    os.system( "iconv -c -f UTF-8 -t ISO_8859-1 " + f + " > tmp.txt" )
+    os.system( "mv tmp.txt " + f )
     os.system( "iconv -c -f UTF-8 -t UTF-8 " + f + " > tmp.txt" )
     os.system( "mv tmp.txt " + f )
-
 
 p = os.path.join( pwd , output_file_dir , output_file_name )
 print "Creating zip archive " + p

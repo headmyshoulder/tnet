@@ -2,9 +2,21 @@
 
 import gtfs
 import simplekml
+import argparse
 
+parser = argparse.ArgumentParser( description = 'Visualize the routes of the VBB data for tnet in KML format.' )
+parser.add_argument( 'database' ,
+                     metavar = 'Database' ,
+                     type = str , 
+                     help = 'Input SQLite database of the VBB schedule.' )
+parser.add_argument( 'output_file' ,
+                     metavar = 'Output' ,
+                     type = str ,
+                     help = 'Output filename for the resultung KML file.' )
 
-sched = gtfs.Schedule( "vbb_2013.db" )
+args = parser.parse_args()
+
+sched = gtfs.Schedule( args.database )
 session = sched.session
 
 kml = simplekml.Kml()
@@ -42,4 +54,4 @@ for trip in sched.trips:
 
 
 
-kml.save( "vbb_2011.kml" )
+kml.save( args.output_file )
