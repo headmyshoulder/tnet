@@ -9,6 +9,8 @@
 
 #include <tnet/db.hpp>
 
+#include <Amboss/KML.h>
+
 #include <boost/numeric/mtl/mtl.hpp>
 
 #include <iostream>
@@ -19,25 +21,110 @@
 
 using namespace std;
 
-void test_mtl( void )
+std::unordered_map< size_t , std::vector< tnet::stop_time > > get_stop_times_map( tnet::stop_time_db_type const & stop_times )
 {
-    mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::row_major > > matrix( 2 , 2 );
-    matrix( 0 , 0 ) = 4.0 ; matrix( 0 , 1 ) = 2.0;
-    matrix( 1 , 0 ) = -0.5 ; matrix( 1 , 1 ) = 10.0;
-    
-    mtl::dense_vector< double > e1( 2 );
-    e1( 0 ) = 1.0 ; e1( 1 ) = 0.0;
-    
-    mtl::dense_vector< double > e2( 2 );
-    e2( 0 ) = 0.0 ; e2( 1 ) = 1.0;
-    
-    mtl::dense_vector< double > r1 , r2;
-    r1 = matrix * e1;
-    r2 = matrix * e2;
-    
-    cout << r1 << endl;
-    cout << r2 << endl;
+    std::unordered_map< size_t , std::vector< tnet::stop_time > > stop_times_map;
+    for( auto const& st : stop_times )
+    {
+        stop_times_map[ st.trip_id ].push_back( st );
+    }
+    return stop_times_map;
 }
+
+void filter_stops( std::unordered_map< size_t , std::vector< tnet::stop_time > > & stop_times_map , tnet::stop_db_type const &stops ,
+                   double lat_min , double lat_max , double lon_min , double lon_max , std::unordered_set< size_t > &stop_ids , 
+                   std::unordered_set< size_t > &trip_ids )
+{
+    for( auto &st : stop_times_map )
+    {
+        std::sort( st.second.begin() , st.second.end() , []( tnet::stop_time const& s1 , tnet::stop_time const& s2 ) { return s1.stop_sequence < s2.stop_sequence; } );
+        
+        auto iter = std::find_if( st.second.begin() , st.second.end() , [&]( tnet::stop_time const& s ) {
+            auto const& stop = stops.at( s.stop_id );
+            return ( lat_min < stop.lat ) && ( stop.lat < lat_max ) && ( lon_min < stop.lon ) && ( stop.lon < lon_max ) ; } );
+        if( iter != st.second.end() ) 
+        {
+            for( auto const s : st.second ) stop_ids.insert( s.stop_id );
+            trip_ids.insert( st.first );
+        }
+    }
+}
+
+void get_stop_ids( std::unordered_map< size_t , std::vector< tnet::stop_time > > & stop_times_map , std::unordered_set< size_t > &stop_ids , 
+                   std::unordered_set< size_t > &trip_ids )
+{
+    for( auto &st : stop_times_map )
+    {
+        std::sort( st.second.begin() , st.second.end() , []( tnet::stop_time const& s1 , tnet::stop_time const& s2 ) { return s1.stop_sequence < s2.stop_sequence; } );
+        for( auto const s : st.second ) stop_ids.insert( s.stop_id );
+        trip_ids.insert( st.first );
+    }
+}
+
+std::unordered_map< size_t , size_t > get_stop_id_map( std::unordered_set< size_t > const & stop_ids )
+{
+    std::unordered_map< size_t , size_t > stop_id_map;
+    size_t count = 0;
+    for( auto id : stop_ids )
+    {
+        stop_id_map.insert( std::make_pair( id , count ) );
+        ++count;
+    }
+    return stop_id_map;
+}
+
+mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > >
+get_google_matrix( std::unordered_set< size_t > const& trip_ids , std::unordered_set< size_t > const& stop_ids , 
+                   std::unordered_map< size_t , std::vector< tnet::stop_time > > const &stop_times_map ,
+                   std::unordered_map< size_t , size_t > const & stop_id_map )
+{
+    typedef mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > > matrix_type;
+    
+    size_t dim = stop_ids.size();
+    matrix_type matrix( dim , dim );
+    for( auto id : trip_ids )
+    {
+        auto r = stop_times_map.equal_range( id );
+        for( auto iter = r.first ; iter != r.second ; ++iter )
+        {
+            auto const& v = iter->second;
+            if( v.empty() ) continue;
+            for( size_t i=0 ; i<v.size() - 1 ; ++i )
+            {
+                size_t id1 = stop_id_map.at( v[i].stop_id ) , id2 = stop_id_map.at( v[i+1].stop_id );
+                matrix( id2 , id1 ) += 1.0;
+            }
+        }
+    }
+
+    // normalize each row
+    for( size_t i=0 ; i<dim ; ++i )
+    {
+        double sum = 0.0;
+        for( size_t j=0 ; j<dim ; ++j ) sum += matrix( j , i );
+        if( sum < 1.0e-10 )
+        {
+            for( size_t j=0 ; j<dim ; ++j ) matrix( j , i ) = 1.0 / double( dim );
+        }
+        else
+        {
+            for( size_t j=0 ; j<dim ; ++j ) matrix( j , i ) /= sum;
+        }
+    }
+    
+    double d = 0.8;
+    matrix_type matrix2( dim , dim );
+    matrix2 = matrix * d;
+    matrix_type tmp3( matrix.dim1() , matrix.dim2() );
+    tmp3 = ( 1.0 - d );
+    matrix2 += tmp3;
+    return matrix2;
+}
+
+
+
+
+typedef boost::geometry::model::point< double , 2 , boost::geometry::cs::spherical_equatorial< boost::geometry::degree > > point_type;
 
 int main( int argc , char *argv[] )
 {
@@ -51,162 +138,41 @@ int main( int argc , char *argv[] )
     open_trips( "../data/vbb_2013/trips.txt" , trips );
     open_stop_times( "../data/vbb_2013/stop_times.txt" , stop_times );
     
-//     create_stop_times_map();
-//     
-//     filter_stops();
-//     
-//     create_google_matrix();
-//     
 //     power_iterations();
     
-    std::unordered_map< size_t , std::vector< tnet::stop_time > > stop_times_map;
-    for( auto const& st : stop_times )
-    {
-        stop_times_map[ st.trip_id ].push_back( st );
-    }
+    auto stop_times_map = get_stop_times_map( stop_times );
     
-    
-    std::unordered_set< size_t > filtered_stop_ids;
-    std::unordered_set< size_t > filtered_trip_ids;
-    
-    // grossraum potsdam
-    double lat_min = 52.339244 , lat_max = 52.425539 , lon_min = 12.976463 , lon_max = 13.092983;
-    
-    // potsdam innenstadt
-    // double lat_min = 52.373858 , lat_max = 52.412486 , lon_min = 13.030913 , lon_max = 13.082190;
-    
-    // potsdam noerdliche innenstadt
-    // double lat_min = 52.399662 , lat_max = 52.410564 , lon_min = 13.04558 , lon_max = 13.065008;
-    
-    // humboldtbruecke
-    // double lat_min = 52.4 , lat_max = 52.402 , lon_min = 13.072 , lon_max = 13.074;
-    
-    for( auto &st : stop_times_map )
-    {
-        std::sort( st.second.begin() , st.second.end() , []( tnet::stop_time const& s1 , tnet::stop_time const& s2 ) { return s1.stop_sequence < s2.stop_sequence; } );
+    std::unordered_set< size_t > stop_ids , trip_ids;
         
-        auto iter = std::find_if( st.second.begin() , st.second.end() , [&]( tnet::stop_time const& s ) {
-            auto const& stop = stops.at( s.stop_id );
-            return ( lat_min < stop.lat ) && ( stop.lat < lat_max ) && ( lon_min < stop.lon ) && ( stop.lon < lon_max ) ; } );
-        if( iter != st.second.end() ) 
-        {
-            for( auto const s : st.second ) filtered_stop_ids.insert( s.stop_id );
-            filtered_trip_ids.insert( st.first );
-        }
-    }
-    
-    std::unordered_map< size_t , size_t > stop_id_map;
-    size_t count = 0;
-    for( auto id : filtered_stop_ids )
-    {
-        stop_id_map.insert( std::make_pair( id , count ) );
-        ++count;
-    }
-    
-    cout << filtered_stop_ids.size() << endl << endl;
-    cout << filtered_trip_ids.size() << endl;
+    double lat_min = 52.339244 , lat_max = 52.425539 , lon_min = 12.976463 , lon_max = 13.092983; // grossraum potsdam
+    // double lat_min = 52.373858 , lat_max = 52.412486 , lon_min = 13.030913 , lon_max = 13.082190; // potsdam innenstadt
+    // double lat_min = 52.399662 , lat_max = 52.410564 , lon_min = 13.04558 , lon_max = 13.065008;  // potsdam noerdliche innenstadt
+    // double lat_min = 52.4 , lat_max = 52.402 , lon_min = 13.072 , lon_max = 13.074;  // humboldtbruecke
+    // filter_stops( stop_times_map , stops , lat_min , lat_max , lon_min , lon_max , stop_ids , trip_ids );
+    get_stop_ids( stop_times_map , stop_ids , trip_ids );
     
     
-    typedef mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > > matrix_type;
-    // create google matrix
-    matrix_type matrix( filtered_stop_ids.size() , filtered_stop_ids.size() );
-    matrix = 0.0;
-    {
-        // mtl::inserter< compressed2D< double > > ins( matrix );
-        for( auto id : filtered_trip_ids )
-        {
-            auto r = stop_times_map.equal_range( id );
-            for( auto iter = r.first ; iter != r.second ; ++iter )
-            {
-                auto pred = []( tnet::stop_time const& t1 , tnet::stop_time const& t2 ) -> bool { return t1.stop_sequence < t2.stop_sequence; };
-                auto &v = iter->second;
-                if( ! std::is_sorted( v.begin() , v.end() , pred ) )
-                   std::sort( v.begin() , v.end() , pred );
-                if( v.empty() ) continue;
-                for( size_t i=0 ; i<v.size() - 1 ; ++i )
-                {
-                    size_t id1 = stop_id_map.at( v[i].stop_id ) , id2 = stop_id_map.at( v[i+1].stop_id );
-                    matrix( id2 , id1 ) += 1.0;
-                }
-            }
-        }
-    }
+    auto stop_id_map = get_stop_id_map( stop_ids );
     
-    for( size_t i=0 ; i<matrix.dim2() ; ++i )
-    {
-        for( size_t j=0 ; j<matrix.dim1() ; ++j )
-        {
-            double val = matrix( j , i );
-            if( std::isnan( val ) )
-                cout << i << " " << j << " " << matrix( j , i ) << "\n";
-        }
-    }
+    cout << stop_ids.size() << endl;
+    cout << trip_ids.size() << endl;
     
-       
-    // normalize each row
-    for( size_t i=0 ; i<matrix.dim2() ; ++i )
-    {
-        double sum = 0.0;
-        for( size_t j=0 ; j<matrix.dim1() ; ++j ) sum += matrix( j , i );
-        if( sum < 1.0e-10 ) continue;
-        for( size_t j=0 ; j<matrix.dim1() ; ++j ) matrix( j , i ) /= sum;
-        
-//         for( size_t j=0 ; j<matrix.dim1() ; ++j )
-//         {
-//             double val = matrix( j , i );
-//             if( std::isnan( val ) )
-//                 cout << i << " " << j << " " << matrix( j , i ) << " " << sum << "\n";
-//         }
-    }
-    
-//    return -1;
-    
-    
-//    cout << matrix << endl;
-//     
-//    return -1;
-    
-    
-    double d = 0.8;
-    matrix_type matrix2( matrix.dim1() , matrix.dim2() );
-    matrix2 = matrix * d;
-    matrix_type tmp3( matrix.dim1() , matrix.dim2() );
-    tmp3 = ( 1.0 - d );
-    matrix2 += tmp3;
-    
-    for( size_t i=0 ; i<matrix.dim1() ; ++i )
-    {
-        double sum = 0.0;
-        for( size_t j=0 ; j<matrix2.dim2() ; ++j ) sum += matrix2( j , i );
-        cout << i << " " << sum << endl;
-    }
-    
-    // return -1 ;
-    // cout << matrix2 << endl << endl << endl;
+    auto matrix = get_google_matrix( trip_ids , stop_ids , stop_times_map , stop_id_map );
     
     
     mtl::dense_vector< double > ev( matrix.dim2() );
-    ev( 0 ) = 1.0;
+    // ev( 0 ) = 1.0;
+        ev = 1.0 / double( matrix.dim2() );
     
-    for( size_t i=0 ; i<100 ; ++i )
+    for( size_t i=0 ; i<10000 ; ++i )
     {
-        cout << "Iteration " << i << endl;
-        
-        double sum = 0.0 , sum_sq = 0.0;
-        for( size_t i=0 ; i<matrix.dim1() ; ++i )
-        {
-            sum += ev( i );
-            sum_sq += ev( i ) * ev( i );
-            // cout << ev( i ) << " ";
-        }
-        // cout << sum << " " << sum_sq << endl;
-        cout << ev << endl;
+        double sum = std::accumulate( ev.begin() , ev.end() , 0.0 );
+        cout << "Iteration " << i << " " << sum << endl;
+        // cout << ev << endl;
         
         mtl::dense_vector< double > tmp;
-        tmp = matrix2 * ev;
+        tmp = matrix * ev;
         ev = tmp;
-        
-        
     }
     
     ofstream fout( "pagerank.dat" );
@@ -217,8 +183,24 @@ int main( int argc , char *argv[] )
         fout << ev(i) << " " << pr[i] << "\n";
     
     
-    
-    // find page rank
+    auto scalePagerank = [&]( double p ) -> double {
+        // return ( 0.1 * std::log10( p ) + 0.9 ) * 1.4 ;
+        // return ( 50.0 * p + 0.1 );
+        double min = pr[0] , max = pr[matrix.dim1()-1];
+        double diff = max - min;
+        double val = ( p - min ) / diff;
+        return val + 0.2;
+    };
+    Amboss::KML::Document kml;
+    for( auto stop_id : stop_ids )
+    {
+        double pagerank = ev[ stop_id_map.at( stop_id ) ];
+        tnet::stop stop = stops.at( stop_id );
+        point_type p = point_type( stop.lon , stop.lat );
+        Amboss::KML::IconStyle style( Amboss::KML::Green , scalePagerank( pagerank ) , Amboss::KML::ShadedDot );
+        kml.add( Amboss::KML::Placemark( p , style ) );
+    }
+    kml.write( "weighted_stops2.kml" );
     
     
     

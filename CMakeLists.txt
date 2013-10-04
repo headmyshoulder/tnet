@@ -24,8 +24,11 @@ if ( CMAKE_COMPILER_IS_GNUCXX )
     set ( CMAKE_CXX_FLAGS "-std=c++0x" )        ## Optimize
 endif ()
 
+set ( AMBOSS_ROOT $ENV{AMBOSS_ROOT} )
+
 include_directories ( ${Boost_INCLUDE_DIRS} )
 include_directories ( ${CMAKE_CURRENT_SOURCE_DIR}/include )
 include_directories ( /home/karsten/boost/mtl/usr/include )
+include_directories ( ${AMBOSS_ROOT}/include )
 
 add_executable ( google_matrix google_matrix.cpp )
