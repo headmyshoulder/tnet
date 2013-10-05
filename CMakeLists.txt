@@ -32,3 +32,4 @@ include_directories ( /home/karsten/boost/mtl/usr/include )
 include_directories ( ${AMBOSS_ROOT}/include )
 
 add_executable ( google_matrix google_matrix.cpp )
+add_executable ( visualize_result visualize_result.cpp )

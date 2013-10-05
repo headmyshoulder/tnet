@@ -74,7 +74,7 @@ std::unordered_map< size_t , size_t > get_stop_id_map( std::unordered_set< size_
 }
 
 mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > >
-get_google_matrix( std::unordered_set< size_t > const& trip_ids , std::unordered_set< size_t > const& stop_ids , 
+get_adjacency_matrix( std::unordered_set< size_t > const& trip_ids , std::unordered_set< size_t > const& stop_ids , 
                    std::unordered_map< size_t , std::vector< tnet::stop_time > > const &stop_times_map ,
                    std::unordered_map< size_t , size_t > const & stop_id_map )
 {
@@ -96,7 +96,16 @@ get_google_matrix( std::unordered_set< size_t > const& trip_ids , std::unordered
             }
         }
     }
+    return matrix;
+}
 
+mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > >
+get_google_matrix( mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > > matrix , double d = 0.8 )
+{
+    typedef mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > > matrix_type;
+    
+    size_t dim = matrix.dim1();
+    
     // normalize each row
     for( size_t i=0 ; i<dim ; ++i )
     {
@@ -112,16 +121,33 @@ get_google_matrix( std::unordered_set< size_t > const& trip_ids , std::unordered
         }
     }
     
-    double d = 0.8;
     matrix_type matrix2( dim , dim );
     matrix2 = matrix * d;
-    matrix_type tmp3( matrix.dim1() , matrix.dim2() );
+    matrix_type tmp3( dim , dim );
     tmp3 = ( 1.0 - d );
     matrix2 += tmp3;
     return matrix2;
 }
 
 
+mtl::dense_vector< double >
+power_iterations( mtl::dense2D< double , mtl::matrix::parameters< mtl::tag::col_major > > const & matrix , size_t iterations = 10000 )
+{
+    mtl::dense_vector< double > ev( matrix.dim2() );
+    ev = 1.0 / double( matrix.dim2() );
+    
+    for( size_t i=0 ; i<10000 ; ++i )
+    {
+        double sum = std::accumulate( ev.begin() , ev.end() , 0.0 );
+        cout << "Iteration " << i << " " << sum << endl;
+        // cout << ev << endl;
+        
+        mtl::dense_vector< double > tmp;
+        tmp = matrix * ev;
+        ev = tmp;
+    }
+    return ev;
+}
 
 
 typedef boost::geometry::model::point< double , 2 , boost::geometry::cs::spherical_equatorial< boost::geometry::degree > > point_type;
@@ -157,23 +183,29 @@ int main( int argc , char *argv[] )
     cout << stop_ids.size() << endl;
     cout << trip_ids.size() << endl;
     
-    auto matrix = get_google_matrix( trip_ids , stop_ids , stop_times_map , stop_id_map );
+    auto adjacency_matrix = get_adjacency_matrix( trip_ids , stop_ids , stop_times_map , stop_id_map );
+    auto matrix = get_google_matrix( adjacency_matrix );
+    auto ev = power_iterations( matrix );
     
-    
-    mtl::dense_vector< double > ev( matrix.dim2() );
-    // ev( 0 ) = 1.0;
-        ev = 1.0 / double( matrix.dim2() );
-    
-    for( size_t i=0 ; i<10000 ; ++i )
+    size_t dim = stop_ids.size();
+    ofstream res_out( "result.dat" );
+    res_out.precision( 14 );
+    for( auto stop_id : stop_ids )
     {
-        double sum = std::accumulate( ev.begin() , ev.end() , 0.0 );
-        cout << "Iteration " << i << " " << sum << endl;
-        // cout << ev << endl;
-        
-        mtl::dense_vector< double > tmp;
-        tmp = matrix * ev;
-        ev = tmp;
+        size_t id = stop_id_map.at( stop_id );
+        double pagerank = ev[ id ];
+        tnet::stop stop = stops.at( stop_id );
+        res_out << stop_id << " " << id << " " << stop.lat << " " << stop.lon << " " << pagerank;
+        for( auto stop_id2 : stop_ids )
+        {
+            size_t id2 = stop_id_map.at( stop_id2 );
+            if( adjacency_matrix( id2 , id ) > 1.0e-10 )
+                res_out << " " << stop_id2 << " " << adjacency_matrix( id2 , id );
+        }
+        res_out << "\n";
     }
+
+    
     
     ofstream fout( "pagerank.dat" );
     fout.precision( 14 );
@@ -200,7 +232,7 @@ int main( int argc , char *argv[] )
         Amboss::KML::IconStyle style( Amboss::KML::Green , scalePagerank( pagerank ) , Amboss::KML::ShadedDot );
         kml.add( Amboss::KML::Placemark( p , style ) );
     }
-    kml.write( "weighted_stops2.kml" );
+    kml.write( "weighted_stops.kml" );
     
     
     
